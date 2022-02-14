@@ -1,0 +1,6 @@
+[submodule "dependencies/glm"]
+	path = dependencies/glm
+	url = git@github.com:spx01/glm.git
+[submodule "dependencies/zlm"]
+	path = dependencies/zlm
+	url = git@github.com:ziglibs/zlm.git
