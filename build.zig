@@ -12,8 +12,6 @@ pub fn build(b: *std.build.Builder) void {
     const mode = b.standardReleaseOptions();
 
     const exe = b.addExecutable("zigterm", "src/main.zig");
-    exe.setTarget(target);
-    exe.setBuildMode(mode);
 
     exe.addPackagePath("zlm", "dependencies/zlm/zlm.zig");
 
@@ -26,6 +24,11 @@ pub fn build(b: *std.build.Builder) void {
     exe.addLibPath("/usr/local/lib/");
     exe.linkSystemLibrary("SDL2");
     exe.linkSystemLibrary("freetype");
+
+    exe.addCSourceFile("src/term_setup.c", &[_][]const u8{});
+
+    exe.setTarget(target);
+    exe.setBuildMode(mode);
 
     exe.install();
 

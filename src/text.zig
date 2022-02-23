@@ -14,10 +14,12 @@ const ShaderCompileType = enum {
 };
 
 const Character = struct {
-    texture_id: u32, // ID handle of the glyph texture
+    // texture_id: u32, // ID handle of the glyph texture
     size: std.meta.Vector(2, i32), // Size of glyph
     bearing: std.meta.Vector(2, i32), // Offset from baseline to left/top of glyph
     advance: i64, // Horizontal offset to advance to next glyph
+    bmp_x: std.meta.Vector(2, u32), // Begin and end of the bmp in the texture atlas, x-axis
+    bmp_y: std.meta.Vector(2, u32), // "", y-axis
 };
 
 pub var allocator: std.mem.Allocator = undefined;
@@ -25,6 +27,10 @@ var characters: std.AutoHashMap(u8, Character) = undefined;
 var VAO: u32 = undefined;
 var VBO: u32 = undefined;
 var text_shader_id: u32 = undefined;
+var texture_atlas_id: u32 = undefined;
+
+var tex_width: u32 = 1;
+var tex_height: u32 = 1;
 
 fn load_file(path: []const u8) anyerror![]u8 {
     const cwd = std.fs.cwd();
@@ -101,7 +107,9 @@ pub fn init() anyerror!void {
     c.glUniformMatrix4fv(c.glGetUniformLocation(text_shader_id, "projection"), 1, c.GL_FALSE, @ptrCast([*c]const f32, &projection));
 
     var err = c.glGetError();
-    std.debug.print("gl error: {}\n", .{err});
+    if (err != 0) {
+        std.debug.print("gl error: {}\n", .{err});
+    }
 
     var ft: c.FT_Library = undefined;
     // All functions return a value different than 0 whenever an error occurred
@@ -116,98 +124,257 @@ pub fn init() anyerror!void {
     }
     defer _ = c.FT_Done_Face(face);
 
-    _ = c.FT_Set_Pixel_Sizes(face, 0, 24);
-    c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 1);
+    _ = c.FT_Set_Char_Size(face, 0, 24 << 6, 300, 300);
+
+    // var num_glyphs: u32 = 128;
+    var max_dim = (1 + (face.*.size.*.metrics.height >> 6)) * 12; // 12 = ceil(sqrt(128))
+    std.debug.print("max_dim: {}\n", .{max_dim});
+    std.debug.print("face.*.size.*.metrics.height: {}\n", .{face.*.size.*.metrics.height});
+
+    while (tex_width < max_dim) {
+        tex_width <<= 1;
+    }
+    tex_height = tex_width;
+    std.debug.print("tex_height: {}\n", .{tex_height});
+
+    // render glyphs to atlas
+    var pixels = try allocator.alloc(u8, tex_width * tex_height);
+    var zero_i: usize = 0;
+    while (zero_i < tex_width * tex_height) {
+        pixels[zero_i] = 0;
+        zero_i += 1;
+    }
+
+    defer allocator.free(pixels);
+    var pen_x: u32 = 0;
+    var pen_y: u32 = 0;
 
     var ch: u8 = 0;
     while (ch < 128) {
-        var texture: u32 = undefined;
-
-        if (c.FT_Load_Char(face, ch, c.FT_LOAD_RENDER) != 0) {
+        if (c.FT_Load_Char(face, ch, c.FT_LOAD_RENDER | c.FT_LOAD_FORCE_AUTOHINT | c.FT_LOAD_TARGET_LIGHT) != 0) {
             std.debug.panic("error loading char num {}\n", .{c});
         }
+        var bmp = &face.*.glyph.*.bitmap;
 
-        c.glGenTextures(1, &texture);
-        c.glBindTexture(c.GL_TEXTURE_2D, texture);
-        c.glTexImage2D(
-            c.GL_TEXTURE_2D,
-            0,
-            c.GL_RED,
-            @intCast(c_int, face.*.glyph.*.bitmap.width),
-            @intCast(c_int, face.*.glyph.*.bitmap.rows),
-            0,
-            c.GL_RED,
-            c.GL_UNSIGNED_BYTE,
-            face.*.glyph.*.bitmap.buffer,
-        );
+        if (pen_x + bmp.*.width >= tex_width) {
+            pen_x = 0;
+            pen_y += ((@intCast(u32, face.*.size.*.metrics.height) >> 6) + 1);
+        }
 
-        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
-        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
-        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR);
-        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR);
+        var row: usize = 0;
+        while (row < bmp.*.rows) {
+            var col: usize = 0;
+            while (col < bmp.*.width) {
+                const x = pen_x + col;
+                const y = pen_y + row;
+                pixels[y * tex_width + x] = bmp.*.buffer[(@intCast(u32, row) * @intCast(u32, bmp.*.pitch)) + col];
+
+                col += 1;
+            }
+
+            row += 1;
+        }
+
+        // this is stuff you'd need when rendering individual glyphs out of the atlas
+
+        // info[i].x0 = pen_x;
+        // info[i].y0 = pen_y;
+        // info[i].x1 = pen_x + bmp.*.width;
+        // info[i].y1 = pen_y + bmp.*.rows;
 
         try characters.put(ch, Character{
-            .texture_id = texture,
             .size = [_]i32{ @intCast(c_int, face.*.glyph.*.bitmap.width), @intCast(c_int, face.*.glyph.*.bitmap.rows) },
             .bearing = [_]i32{ face.*.glyph.*.bitmap_left, face.*.glyph.*.bitmap_top },
             .advance = face.*.glyph.*.advance.x,
+            .bmp_x = [_]u32{ pen_x, pen_x + bmp.*.width },
+            .bmp_y = [_]u32{ pen_y, pen_y + bmp.*.width },
         });
 
-        c.glBindTexture(c.GL_TEXTURE_2D, 0);
-
+        pen_x += bmp.*.width + 1;
         ch += 1;
     }
+
+    // std.debug.print("allocating {} bytes for png_data\n", .{tex_width * tex_height * 4});
+    // var png_data = try allocator.alloc(u8, tex_width * tex_height * 4);
+    // defer allocator.free(png_data);
+    // var i: usize = 0;
+    // while (i < (tex_width * tex_height)) {
+    //     png_data[i * 4 + 0] |= pixels[i];
+    //     png_data[i * 4 + 1] |= pixels[i];
+    //     png_data[i * 4 + 2] |= pixels[i];
+    //     png_data[i * 4 + 3] = 0xff;
+    //     i += 1;
+    // }
+    // _ = c.stbi_write_png(
+    //     "font_output.png",
+    //     @intCast(c_int, tex_width),
+    //     @intCast(c_int, tex_height),
+    //     4,
+    //     @ptrCast(*const anyopaque, png_data),
+    //     @intCast(c_int, tex_width * 4),
+    // );
+
+    // _ = c.FT_Set_Pixel_Sizes(face, 0, 16);
+
+    c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 1);
+    c.glGenTextures(1, &texture_atlas_id);
+    c.glBindTexture(c.GL_TEXTURE_2D, texture_atlas_id);
+    c.glTexImage2D(
+        c.GL_TEXTURE_2D,
+        0,
+        c.GL_RED,
+        @intCast(c_int, tex_width),
+        @intCast(c_int, tex_height),
+        0,
+        c.GL_RED,
+        c.GL_UNSIGNED_BYTE,
+        @ptrCast(*const anyopaque, pixels),
+    );
+
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_LINEAR);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_LINEAR);
+    c.glBindTexture(c.GL_TEXTURE_2D, 0);
 
     // -----------------------------------
     c.glGenVertexArrays(1, &VAO);
     c.glGenBuffers(1, &VBO);
     c.glBindVertexArray(VAO);
     c.glBindBuffer(c.GL_ARRAY_BUFFER, VBO);
-    c.glBufferData(c.GL_ARRAY_BUFFER, @sizeOf(f32) * 6 * 4, null, c.GL_DYNAMIC_DRAW);
+    c.glBufferData(c.GL_ARRAY_BUFFER, @sizeOf(f32) * 6 * 4, null, c.GL_STATIC_DRAW); // c.GL_DYNAMIC_DRAW);
     c.glEnableVertexAttribArray(0);
     c.glVertexAttribPointer(0, 4, c.GL_FLOAT, c.GL_FALSE, 4 * @sizeOf(f32), @intToPtr(*allowzero const anyopaque, 0));
     c.glBindBuffer(c.GL_ARRAY_BUFFER, 0);
     c.glBindVertexArray(0);
+    err = c.glGetError();
+    if (err != 0) {
+        std.debug.print("gl error: {}\n", .{err});
+    }
 }
 
-pub fn render(text: []const u8, begin_x: f32, y: f32, scale: f32, color: zlm.Vec3) void {
+pub fn render(text: []const u8, begin_x: f32, begin_y: f32, scale: f32, color: zlm.Vec3) void {
+    _ = text;
+    _ = begin_x;
+    _ = begin_y;
+    _ = scale;
+
     c.glUseProgram(text_shader_id);
     c.glUniform3f(c.glGetUniformLocation(text_shader_id, "textColor"), color.x, color.y, color.z);
     c.glActiveTexture(c.GL_TEXTURE0);
     c.glBindVertexArray(VAO);
+    c.glBindBuffer(c.GL_ARRAY_BUFFER, VBO);
+    c.glBindTexture(c.GL_TEXTURE_2D, texture_atlas_id);
 
-    var x = begin_x;
-    for (text) |i| {
-        var ch: Character = characters.get(i).?;
+    // float vertices[] = {
+    //     // first triangle
+    //      0.5f,  0.5f, 0.0f,  // top right
+    //      0.5f, -0.5f, 0.0f,  // bottom right
+    //     -0.5f,  0.5f, 0.0f,  // top left
+    //     // second triangle
+    //      0.5f, -0.5f, 0.0f,  // bottom right
+    //     -0.5f, -0.5f, 0.0f,  // bottom left
+    //     -0.5f,  0.5f, 0.0f   // top left
+    // };
 
-        const xpos = x + @intToFloat(f32, ch.bearing[0]) + scale;
-        const ypos = y - @intToFloat(f32, (ch.size[1] - ch.bearing[1])) * scale;
+    const xpos = 10.0;
+    const ypos = -10.0;
+    const w = 600.0;
+    const h = 400.0;
 
-        const w = @intToFloat(f32, ch.size[0]) * scale;
-        const h = @intToFloat(f32, ch.size[1]) * scale;
+    // const vertices = [6][4]f32{
+    //     [4]f32{ 10.0, 10.0, 0.0, 0.0 }, // bottom left
+    //     [4]f32{ -0.5, 0.5, 0.0, 1.0 }, // top left
+    //     [4]f32{ 0.5, 0.5, 1.0, 1.0 }, // top right
+    //     [4]f32{ -0.5, -0.5, 0.0, 0.0 }, // bottom left
+    //     [4]f32{ 0.5, 0.5, 1.0, 1.0 }, // top right
+    //     [4]f32{ 0.5, -0.5, 1.0, 0.0 }, // bottom right
+    // };
+    // const vertices = [6][4]f32{
+    //     .{ xpos, ypos + h, 0.0, 0.0 },
+    //     .{ xpos, ypos, 0.0, 1.0 },
+    //     .{ xpos + w, ypos, 1.0, 1.0 },
+    //     .{ xpos, ypos + h, 0.0, 0.0 },
+    //     .{ xpos + w, ypos, 1.0, 1.0 },
+    //     .{ xpos + w, ypos + h, 1.0, 0.0 },
+    // };
+    // float vertices[] = {
+    //     // positions          // colors           // texture coords
+    //      0.5f,  0.5f, 0.0f,   1.0f, 0.0f, 0.0f,   1.0f, 1.0f,   // top right
+    //      0.5f, -0.5f, 0.0f,   0.0f, 1.0f, 0.0f,   1.0f, 0.0f,   // bottom right
+    //     -0.5f, -0.5f, 0.0f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,   // bottom left
+    //     -0.5f,  0.5f, 0.0f,   1.0f, 1.0f, 0.0f,   0.0f, 1.0f    // top left
+    // };
 
-        const vertices = [6][4]f32{
-            [4]f32{ xpos, ypos + h, 0.0, 0.0 },
-            [4]f32{ xpos, ypos, 0.0, 1.0 },
-            [4]f32{ xpos + w, ypos, 1.0, 1.0 },
-            [4]f32{ xpos, ypos + h, 0.0, 0.0 },
-            [4]f32{ xpos + w, ypos, 1.0, 1.0 },
-            [4]f32{ xpos + w, ypos + h, 1.0, 0.0 },
-        };
+    var ch: Character = characters.get('a').?;
+    const begin_tex_x: f32 = @intToFloat(f32, ch.bmp_x[0]) / @intToFloat(f32, tex_width);
+    const begin_tex_y: f32 = @intToFloat(f32, ch.bmp_y[0]) / @intToFloat(f32, tex_height);
+    const end_tex_x: f32 = @intToFloat(f32, ch.bmp_x[1]) / @intToFloat(f32, tex_width);
+    const end_tex_y: f32 = @intToFloat(f32, ch.bmp_y[1]) / @intToFloat(f32, tex_height);
+    const vertices = [6][4]f32{
+        .{ xpos, ypos + h, begin_tex_x, begin_tex_y }, // bottom left
+        .{ xpos, ypos, begin_tex_x, end_tex_y }, // top left
+        .{ xpos + w, ypos, end_tex_x, end_tex_y }, // rop right
+        .{ xpos, ypos + h, begin_tex_x, begin_tex_y }, // bottom left
+        .{ xpos + w, ypos, end_tex_x, end_tex_y }, // top right
+        .{ xpos + w, ypos + h, end_tex_x, begin_tex_y }, // bottom right
+    };
 
-        // render glyph texture over quad
-        c.glBindTexture(c.GL_TEXTURE_2D, ch.texture_id);
-        // update content of VBO memory
-        c.glBindBuffer(c.GL_ARRAY_BUFFER, VBO);
-        c.glBufferSubData(c.GL_ARRAY_BUFFER, 0, @sizeOf(f32) * 6 * 4, @ptrCast(*const anyopaque, &vertices)); // be sure to use glBufferSubData and not glBufferData
+    const elem_size: comptime_int = @sizeOf(f32) * 6 * 4;
+    c.glBufferSubData(c.GL_ARRAY_BUFFER, 0, elem_size, @ptrCast(*const anyopaque, &vertices));
 
-        c.glBindBuffer(c.GL_ARRAY_BUFFER, 0);
-        // render quad
-        c.glDrawArrays(c.GL_TRIANGLES, 0, 6);
-        // now advance cursors for next glyph (note that advance is number of 1/64 pixels)
-        x += @intToFloat(f32, ch.advance >> 6) * scale; // bitshift by 6 to get value in pixels (2^6 = 64 (divide amount of 1/64th pixels by 64 to get amount of pixels))
+    // var x = begin_x;
+    // var y = begin_y;
+    // var count: i32 = 0;
+    // for (text) |i| {
+    //     if (i == 0) {
+    //         continue;
+    //     }
+    //     if (i == '\n' or i == '\r') {
+    //         x = begin_x;
+    //         y -= 8.0;
+    //         continue;
+    //     }
+
+    //     var ch: Character = characters.get(i).?;
+
+    //     const xpos = x + @intToFloat(f32, ch.bearing[0]) + scale;
+    //     const ypos = y - @intToFloat(f32, (ch.size[1] - ch.bearing[1])) * scale;
+
+    //     const w = @intToFloat(f32, ch.size[0]) * scale;
+    //     const h = @intToFloat(f32, ch.size[1]) * scale;
+
+    //     const vertices = [6][4]f32{
+    //         [4]f32{ xpos, ypos + h, 0.0, 0.0 },
+    //         [4]f32{ xpos, ypos, 0.0, 1.0 },
+    //         [4]f32{ xpos + w, ypos, 1.0, 1.0 },
+    //         [4]f32{ xpos, ypos + h, 0.0, 0.0 },
+    //         [4]f32{ xpos + w, ypos, 1.0, 1.0 },
+    //         [4]f32{ xpos + w, ypos + h, 1.0, 0.0 },
+    //     };
+
+    //     // render glyph texture over quad
+
+    //     // update content of VBO memory
+
+    //     const buffer_element_size = @sizeOf(f32) * 6 * 4;
+    //     c.glBufferSubData(c.GL_ARRAY_BUFFER, count * buffer_element_size, buffer_element_size, @ptrCast(*const anyopaque, &vertices)); // be sure to use glBufferSubData and not glBufferData
+
+    //     // now advance cursors for next glyph (note that advance is number of 1/64 pixels)
+    //     x += @intToFloat(f32, ch.advance >> 6) * scale; // bitshift by 6 to get value in pixels (2^6 = 64 (divide amount of 1/64th pixels by 64 to get amount of pixels))
+    //     count += 1;
+    // }
+    // render quad
+    c.glDrawArrays(c.GL_TRIANGLES, 0, 6);
+
+    var err = c.glGetError();
+    if (err != 0) {
+        std.debug.print("gl error: {}\n", .{err});
     }
 
+    // std.debug.print("drew {} characters\n", .{count});
+
+    c.glBindBuffer(c.GL_ARRAY_BUFFER, 0);
     c.glBindVertexArray(0);
     c.glBindTexture(c.GL_TEXTURE_2D, 0);
 }

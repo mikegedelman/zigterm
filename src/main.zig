@@ -4,74 +4,132 @@ const zlm = @import("zlm");
 const text = @import("text.zig");
 
 const c = @cImport({
-    @cInclude("util.h");
-    @cInclude("unistd.h");
-    @cInclude("sys/ioctl.h");
-    @cInclude("sys/select.h");
-    @cInclude("fcntl.h");
+    @cInclude("term_setup.h");
 
     @cInclude("glad/glad.h");
     @cInclude("SDL2/SDL.h");
     @cInclude("SDL2/SDL_opengl.h");
 });
 
-var term_buf: [2048]u8 = undefined;
-var term_buf_pos: usize = 0;
+var tty_buf: [2048]u8 = undefined;
+var tty_pos: usize = 0;
+var pty_fd: i32 = 0;
 
-fn load_file() anyerror!std.ArrayList(i32) {
-    const cwd = std.fs.cwd();
-
-    const file: std.fs.File = try cwd.openFile("input.txt", .{ .mode = std.fs.File.OpenMode.read_only });
-    defer file.close();
-
-    var buffer: [500]u8 = undefined;
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    const reader = file.reader();
-    while (true) {
-        const result = try reader.readUntilDelimiterOrEof(buffer[0..], '\n');
-        if (result == null) {
+fn print_buffer(buf: []u8) void {
+    for (buf) |ch| {
+        if (ch == 0) {
             break;
         }
-
-        try list.append(try std.fmt.parseInt(i32, result.?, 10));
+        std.debug.print("{x} ", .{ch});
     }
-
-    for (list.items) |input| {
-        std.debug.print("{}\n", .{input});
-    }
-
-    // const t = @typeInfo(@TypeOf(list));
-    // std.debug.print("{s}\n", .{t});
-
-    return list;
+    std.debug.print("\n", .{});
 }
 
-fn update(master_fd: i32, events: std.ArrayList(c.SDL_Event)) anyerror!void {
-    var fds: c.fd_set = undefined;
-    c.FD_ZERO(&fds);
-    c.FD_SET(&fds, master_fd);
-    if (c.select(master_fd + 1, &fds, 0, 0) == 1) {
-        const bytes_read = try std.os.read(master_fd, term_buf[term_buf_pos..]);
-        term_buf_pos += bytes_read;
+fn read_pty() usize {
+    var buf: [4096:0]u8 = undefined;
+    const bytes_read = std.os.read(pty_fd, &buf) catch |err| switch (err) {
+        // if (err != error.WouldBlock) {
+        //     std.debug.panic("{}\n", .{err});
+        // }
+        // return 0;
+        error.WouldBlock => 0,
+        else => {
+            std.debug.panic("{}\n", .{err});
+        },
+    };
+    buf[bytes_read] = 0;
+
+    if (bytes_read > 0) {
+        print_buffer(&buf);
+
+        for (buf) |ch| {
+            if (ch == 0) {
+                break;
+            }
+            if (ch == 0x7) {
+                std.debug.print("ding\n", .{});
+                continue;
+            }
+            if (ch == 0x8) {
+                tty_pos -= 1;
+                continue;
+            }
+
+            tty_buf[tty_pos] = ch;
+            tty_pos += 1;
+        }
+        print_buffer(&tty_buf);
+    }
+    return bytes_read;
+}
+
+// https://wiki.libsdl.org/SDL_Keycode
+fn transform_key(code: i32, modifiers: u32) u8 {
+    if (code == c.SDLK_LSHIFT or code == c.SDLK_RSHIFT or code == c.SDLK_LCTRL or code == c.SDLK_RCTRL) {
+        return 0;
     }
 
-    // var write_buf: [256]u8 = undefined;
-    // var write_buf_pos: usize = 0;
-    // std.debug.print("len: {}\n", .{events.len});
-    for (events.items) |event| {
-        std.debug.print("{}\n", .{event.key.keysym.sym});
-        // write_buf[write_buf_pos] = @truncate(u8, @bitCast(u32, event.key.keysym.sym));
-        // write_buf_pos += 1;
+    if (code == c.SDLK_RETURN) {
+        return 0xa;
+    }
+    if (code == c.SDLK_BACKSPACE) {
+        return 0x08;
     }
 
-    // _ = c.write(master_fd, &write_buf, write_buf_pos);
+    const shift_pressed: bool = (modifiers & 1) == 1;
+    var raw_code = @truncate(u8, @bitCast(u32, code));
+    if ((raw_code >= 65) and (raw_code <= 90) and !shift_pressed) {
+        raw_code += 32;
+    }
+
+    return raw_code;
+}
+
+// export fn event(e: ?*const sapp.Event) void {
+//     const ev = e.?;
+
+//     if (ev.type != .KEY_DOWN) {
+//         return;
+//     }
+
+//     std.debug.print("{x} ({x})", .{ ev.key_code, ev.modifiers });
+//     const key = transform_key(ev.key_code, ev.modifiers);
+//     if (key == 0) {
+//         std.debug.print("\n", .{});
+//         return;
+//     }
+
+//     std.debug.print("writing {x}\n", .{key});
+//     const buf = [1]u8{key};
+//     _ = std.os.write(pty_fd, &buf) catch |err| std.debug.panic("{}\n", .{err});
+// }
+
+fn update(events: std.ArrayList(c.SDL_Event)) anyerror!void {
+    _ = read_pty();
+
+    for (events.items) |e| {
+        if (e.type != c.SDL_KEYDOWN) {
+            continue;
+        }
+
+        std.debug.print("{x} ({x})", .{ e.key.keysym.sym, e.key.keysym.mod });
+        const key = transform_key(e.key.keysym.sym, e.key.keysym.mod);
+        if (key == 0) {
+            std.debug.print("\n", .{});
+            return;
+        }
+
+        std.debug.print("writing {x}\n", .{key});
+        const buf = [1]u8{key};
+        _ = std.os.write(pty_fd, &buf) catch |err| std.debug.panic("{}\n", .{err});
+    }
 }
 
 fn render() void {
     c.glClearColor(0.0, 0.0, 0.0, 0.0);
     c.glClear(c.GL_COLOR_BUFFER_BIT);
 
-    text.render(&term_buf, 10.0, 10.0, 1.0, zlm.Vec3.new(1.0, 1.0, 1.0));
+    text.render(&tty_buf, 10.0, 400.0 - 20.0, 1.0, zlm.Vec3.new(1.0, 1.0, 1.0));
 
     var err: u32 = c.glGetError();
     while (err != 0) {
@@ -85,62 +143,10 @@ pub fn main() anyerror!void {
     defer arena.deinit();
     text.allocator = arena.allocator();
 
-    term_buf[0] = 0;
+    tty_buf[0] = 0;
 
-    var amaster: i32 = undefined;
-    // var aslave: i32 = undefined;
-    var fname: [256]u8 = undefined;
-    // var termios: c.termios = undefined;
-    // var winsize: c.winsize = undefined;
-    // c.openpty(&amaster, &aslave, &fname, &termios, &winsize);
-    const pid = c.forkpty(&amaster, &fname, null, null);
-    // std.debug.print("pid: {}\namaster: {}\nfname: {s}\n", .{ pid, amaster, fname });
-
-    if (pid == 0) {
-        _ = c.close(amaster);
-        _ = c.setsid();
-
-        const slave_fd = c.open(@ptrCast([*c]const u8, &fname), c.O_RDWR | c.O_NOCTTY);
-
-        // error: TODO: support C ABI for more targets. https://github.com/ziglang/zig/issues/1481
-        // _ = c.ioctl(slave_fd, c.TIOCSCTTY, null);
-
-        _ = c.dup2(slave_fd, 0);
-        _ = c.dup2(slave_fd, 1);
-        _ = c.dup2(slave_fd, 2);
-
-        _ = c.execl("/bin/dash", "/bin/dash");
-
-        return;
-        // std.debug.print("there\n", .{});
-    } else {
-        std.debug.print("here\n", .{});
-        const slave_fd = c.open(@ptrCast([*c]const u8, &fname), c.O_RDWR | c.O_NOCTTY);
-        std.debug.print("slave_fd: {}\nslave_pid: {}\n", .{ slave_fd, pid });
-    }
-
-    // var buf: [2048]u8 = undefined;
-    // var bytes_read = try std.os.read(amaster, &buf);
-    // std.debug.print("bytes read: {}\n", .{bytes_read});
-    // var i: u32 = 0;
-    // while (i < bytes_read) {
-    //     std.debug.print("{x} ", .{buf[i]});
-    //     i += 1;
-    // }
-    // std.debug.print("bytes_read: {}\n{s}\n", .{ bytes_read, buf[0..bytes_read] });
-    // std.debug.print("bytes read: {}\n\n{s}\n", .{ bytes_read, buf });
-
-    // _ = try std.os.write(amaster, &.{0xd});
-    // bytes_read = try std.os.read(amaster, &buf);
-    // std.debug.print("bytes_read 2: {}\n{s}\n", .{ bytes_read, buf[0..bytes_read] });
-    // var i: u32 = 0;
-    // while (i < bytes_read) {
-    //     std.debug.print("{x} ", .{buf[i]});
-    //     i += 1;
-    // }
-    // bytes_read = try std.os.read(amaster, &buf);
-    // std.debug.print("bytes_read 3: {}\n{s}\n", .{ bytes_read, buf[0..bytes_read] });
-    // bytes_read = try std.os.read(amaster, &buf);
+    tty_buf[0] = 0;
+    pty_fd = c.tty_setup("/bin/dash");
 
     _ = c.SDL_Init(c.SDL_INIT_VIDEO);
     defer c.SDL_Quit();
@@ -171,6 +177,8 @@ pub fn main() anyerror!void {
     try text.init();
 
     mainloop: while (true) {
+        // const start = c.SDL_GetPerformanceCounter();
+
         var sdl_event: c.SDL_Event = undefined;
         var events = std.ArrayList(c.SDL_Event).init(std.testing.allocator);
         while (c.SDL_PollEvent(&sdl_event) != 0) {
@@ -182,10 +190,15 @@ pub fn main() anyerror!void {
             try events.append(sdl_event);
         }
 
-        try update(amaster, events);
+        try update(events);
+        // const now1 = c.SDL_GetPerformanceCounter();
+        // const duration1 = ((now1 - start) * 1000) / c.SDL_GetPerformanceFrequency();
+        // std.debug.print("update took {} ms\n", .{duration1});
         render();
-
         c.SDL_GL_SwapWindow(window);
+        // const now2 = c.SDL_GetPerformanceCounter();
+        // const duration2 = ((now2 - start) * 1000) / c.SDL_GetPerformanceFrequency();
+        // std.debug.print("render took {} ms\n", .{duration2});
     }
 }
 

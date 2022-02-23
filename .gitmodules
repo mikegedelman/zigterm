@@ -4,3 +4,6 @@
 [submodule "dependencies/zlm"]
 	path = dependencies/zlm
 	url = git@github.com:ziglibs/zlm.git
+[submodule "dependencies/sokol"]
+	path = dependencies/sokol
+	url = https://github.com/floooh/sokol-zig
