@@ -14,7 +14,6 @@ const ShaderCompileType = enum {
 };
 
 const Character = struct {
-    // texture_id: u32, // ID handle of the glyph texture
     size: std.meta.Vector(2, i32), // Size of glyph
     bearing: std.meta.Vector(2, i32), // Offset from baseline to left/top of glyph
     advance: i64, // Horizontal offset to advance to next glyph
@@ -24,8 +23,10 @@ const Character = struct {
 
 pub var allocator: std.mem.Allocator = undefined;
 var characters: std.AutoHashMap(u8, Character) = undefined;
+
 var VAO: u32 = undefined;
 var VBO: u32 = undefined;
+
 var text_shader_id: u32 = undefined;
 var texture_atlas_id: u32 = undefined;
 
@@ -38,6 +39,8 @@ fn load_file(path: []const u8) anyerror![]u8 {
     try return file.readToEndAlloc(std.testing.allocator, 2048);
 }
 
+/// Check whether the vertex/fragment shader or shader program properly compiled
+/// Panic if an error occurred.
 fn check_shader_compile(shader_obj: u32, compile_type: ShaderCompileType) void {
     var success: i32 = undefined;
     var info_log: [1024]u8 = undefined;
@@ -124,7 +127,7 @@ pub fn init() anyerror!void {
     }
     defer _ = c.FT_Done_Face(face);
 
-    _ = c.FT_Set_Char_Size(face, 0, 24 << 6, 300, 300);
+    _ = c.FT_Set_Char_Size(face, 0, 11 << 6, 192, 192);
 
     // var num_glyphs: u32 = 128;
     var max_dim = (1 + (face.*.size.*.metrics.height >> 6)) * 12; // 12 = ceil(sqrt(128))
@@ -187,7 +190,7 @@ pub fn init() anyerror!void {
             .bearing = [_]i32{ face.*.glyph.*.bitmap_left, face.*.glyph.*.bitmap_top },
             .advance = face.*.glyph.*.advance.x,
             .bmp_x = [_]u32{ pen_x, pen_x + bmp.*.width },
-            .bmp_y = [_]u32{ pen_y, pen_y + bmp.*.width },
+            .bmp_y = [_]u32{ pen_y, pen_y + bmp.*.rows },
         });
 
         pen_x += bmp.*.width + 1;
@@ -242,7 +245,7 @@ pub fn init() anyerror!void {
     c.glGenBuffers(1, &VBO);
     c.glBindVertexArray(VAO);
     c.glBindBuffer(c.GL_ARRAY_BUFFER, VBO);
-    c.glBufferData(c.GL_ARRAY_BUFFER, @sizeOf(f32) * 6 * 4, null, c.GL_STATIC_DRAW); // c.GL_DYNAMIC_DRAW);
+    c.glBufferData(c.GL_ARRAY_BUFFER, @sizeOf(f32) * 6 * 4 * 2048, null, c.GL_STATIC_DRAW); // c.GL_DYNAMIC_DRAW);
     c.glEnableVertexAttribArray(0);
     c.glVertexAttribPointer(0, 4, c.GL_FLOAT, c.GL_FALSE, 4 * @sizeOf(f32), @intToPtr(*allowzero const anyopaque, 0));
     c.glBindBuffer(c.GL_ARRAY_BUFFER, 0);
@@ -277,10 +280,10 @@ pub fn render(text: []const u8, begin_x: f32, begin_y: f32, scale: f32, color: z
     //     -0.5f,  0.5f, 0.0f   // top left
     // };
 
-    const xpos = 10.0;
-    const ypos = -10.0;
-    const w = 600.0;
-    const h = 400.0;
+    // const xpos = 10.0;
+    // const ypos = -10.0;
+    // const w = 600.0;
+    // const h = 400.0;
 
     // const vertices = [6][4]f32{
     //     [4]f32{ 10.0, 10.0, 0.0, 0.0 }, // bottom left
@@ -306,66 +309,80 @@ pub fn render(text: []const u8, begin_x: f32, begin_y: f32, scale: f32, color: z
     //     -0.5f,  0.5f, 0.0f,   1.0f, 1.0f, 0.0f,   0.0f, 1.0f    // top left
     // };
 
-    var ch: Character = characters.get('a').?;
-    const begin_tex_x: f32 = @intToFloat(f32, ch.bmp_x[0]) / @intToFloat(f32, tex_width);
-    const begin_tex_y: f32 = @intToFloat(f32, ch.bmp_y[0]) / @intToFloat(f32, tex_height);
-    const end_tex_x: f32 = @intToFloat(f32, ch.bmp_x[1]) / @intToFloat(f32, tex_width);
-    const end_tex_y: f32 = @intToFloat(f32, ch.bmp_y[1]) / @intToFloat(f32, tex_height);
-    const vertices = [6][4]f32{
-        .{ xpos, ypos + h, begin_tex_x, begin_tex_y }, // bottom left
-        .{ xpos, ypos, begin_tex_x, end_tex_y }, // top left
-        .{ xpos + w, ypos, end_tex_x, end_tex_y }, // rop right
-        .{ xpos, ypos + h, begin_tex_x, begin_tex_y }, // bottom left
-        .{ xpos + w, ypos, end_tex_x, end_tex_y }, // top right
-        .{ xpos + w, ypos + h, end_tex_x, begin_tex_y }, // bottom right
-    };
+    // var ch: Character = characters.get('a').?;
+    // const begin_tex_x: f32 = @intToFloat(f32, ch.bmp_x[0]) / @intToFloat(f32, tex_width);
+    // const begin_tex_y: f32 = @intToFloat(f32, ch.bmp_y[0]) / @intToFloat(f32, tex_height);
+    // const end_tex_x: f32 = @intToFloat(f32, ch.bmp_x[1]) / @intToFloat(f32, tex_width);
+    // const end_tex_y: f32 = @intToFloat(f32, ch.bmp_y[1]) / @intToFloat(f32, tex_height);
+    // const vertices = [6][4]f32{
+    //     .{ xpos, ypos + h, begin_tex_x, begin_tex_y }, // bottom left
+    //     .{ xpos, ypos, begin_tex_x, end_tex_y }, // top left
+    //     .{ xpos + w, ypos, end_tex_x, end_tex_y }, // rop right
+    //     .{ xpos, ypos + h, begin_tex_x, begin_tex_y }, // bottom left
+    //     .{ xpos + w, ypos, end_tex_x, end_tex_y }, // top right
+    //     .{ xpos + w, ypos + h, end_tex_x, begin_tex_y }, // bottom right
+    // };
 
-    const elem_size: comptime_int = @sizeOf(f32) * 6 * 4;
-    c.glBufferSubData(c.GL_ARRAY_BUFFER, 0, elem_size, @ptrCast(*const anyopaque, &vertices));
+    // const elem_size: comptime_int = @sizeOf(f32) * 6 * 4;
+    // c.glBufferSubData(c.GL_ARRAY_BUFFER, 0, elem_size, @ptrCast(*const anyopaque, &vertices));
 
-    // var x = begin_x;
-    // var y = begin_y;
-    // var count: i32 = 0;
-    // for (text) |i| {
-    //     if (i == 0) {
-    //         continue;
-    //     }
-    //     if (i == '\n' or i == '\r') {
-    //         x = begin_x;
-    //         y -= 8.0;
-    //         continue;
-    //     }
+    var x = begin_x;
+    var y = begin_y;
+    var count: i32 = 0;
+    for (text) |i| {
+        if (i == 0) {
+            continue;
+        }
+        if (i == '\n' or i == '\r') {
+            x = begin_x;
+            y -= 10.0;
+            continue;
+        }
+        if (count > 2048) {
+            std.debug.panic("opengl buffer not big enough\n", .{});
+        }
 
-    //     var ch: Character = characters.get(i).?;
+        var ch: Character = characters.get(i).?;
 
-    //     const xpos = x + @intToFloat(f32, ch.bearing[0]) + scale;
-    //     const ypos = y - @intToFloat(f32, (ch.size[1] - ch.bearing[1])) * scale;
+        const xpos = x + @intToFloat(f32, ch.bearing[0]) + scale;
+        const ypos = y - @intToFloat(f32, (ch.size[1] - ch.bearing[1])) * scale;
 
-    //     const w = @intToFloat(f32, ch.size[0]) * scale;
-    //     const h = @intToFloat(f32, ch.size[1]) * scale;
+        const w = @intToFloat(f32, ch.size[0]) * scale;
+        const h = @intToFloat(f32, ch.size[1]) * scale;
 
-    //     const vertices = [6][4]f32{
-    //         [4]f32{ xpos, ypos + h, 0.0, 0.0 },
-    //         [4]f32{ xpos, ypos, 0.0, 1.0 },
-    //         [4]f32{ xpos + w, ypos, 1.0, 1.0 },
-    //         [4]f32{ xpos, ypos + h, 0.0, 0.0 },
-    //         [4]f32{ xpos + w, ypos, 1.0, 1.0 },
-    //         [4]f32{ xpos + w, ypos + h, 1.0, 0.0 },
-    //     };
+        const begin_tex_x: f32 = @intToFloat(f32, ch.bmp_x[0]) / @intToFloat(f32, tex_width);
+        const begin_tex_y: f32 = @intToFloat(f32, ch.bmp_y[0]) / @intToFloat(f32, tex_height);
+        const end_tex_x: f32 = @intToFloat(f32, ch.bmp_x[1]) / @intToFloat(f32, tex_width);
+        const end_tex_y: f32 = @intToFloat(f32, ch.bmp_y[1]) / @intToFloat(f32, tex_height);
+        const vertices = [6][4]f32{
+            .{ xpos, ypos + h, begin_tex_x, begin_tex_y }, // bottom left
+            .{ xpos, ypos, begin_tex_x, end_tex_y }, // top left
+            .{ xpos + w, ypos, end_tex_x, end_tex_y }, // rop right
+            .{ xpos, ypos + h, begin_tex_x, begin_tex_y }, // bottom left
+            .{ xpos + w, ypos, end_tex_x, end_tex_y }, // top right
+            .{ xpos + w, ypos + h, end_tex_x, begin_tex_y }, // bottom right
+        };
 
-    //     // render glyph texture over quad
+        // render glyph texture over quad
 
-    //     // update content of VBO memory
+        // update content of VBO memory
 
-    //     const buffer_element_size = @sizeOf(f32) * 6 * 4;
-    //     c.glBufferSubData(c.GL_ARRAY_BUFFER, count * buffer_element_size, buffer_element_size, @ptrCast(*const anyopaque, &vertices)); // be sure to use glBufferSubData and not glBufferData
+        const buffer_element_size: comptime_int = @sizeOf(f32) * 6 * 4;
+        c.glBufferSubData(
+            c.GL_ARRAY_BUFFER,
+            count * buffer_element_size,
+            buffer_element_size,
+            @ptrCast(*const anyopaque, &vertices),
+        ); // be sure to use glBufferSubData and not glBufferData
 
-    //     // now advance cursors for next glyph (note that advance is number of 1/64 pixels)
-    //     x += @intToFloat(f32, ch.advance >> 6) * scale; // bitshift by 6 to get value in pixels (2^6 = 64 (divide amount of 1/64th pixels by 64 to get amount of pixels))
-    //     count += 1;
-    // }
+        // now advance cursors for next glyph (note that advance is number of 1/64 pixels)
+        x += @intToFloat(f32, ch.advance >> 6) * scale; // bitshift by 6 to get value in pixels (2^6 = 64 (divide amount of 1/64th pixels by 64 to get amount of pixels))
+        count += 1;
+        // std.debug.print("drew a char starting at {}", .{x});
+    }
+    // std.debug.print("drew {} characters\n", .{count});
     // render quad
-    c.glDrawArrays(c.GL_TRIANGLES, 0, 6);
+    c.glDrawArrays(c.GL_TRIANGLES, 0, count * 6);
 
     var err = c.glGetError();
     if (err != 0) {

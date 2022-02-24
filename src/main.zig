@@ -129,7 +129,7 @@ fn render() void {
     c.glClearColor(0.0, 0.0, 0.0, 0.0);
     c.glClear(c.GL_COLOR_BUFFER_BIT);
 
-    text.render(&tty_buf, 10.0, 400.0 - 20.0, 1.0, zlm.Vec3.new(1.0, 1.0, 1.0));
+    text.render(&tty_buf, 10.0, 400.0 - 20.0, 0.8, zlm.Vec3.new(1.0, 1.0, 1.0));
 
     var err: u32 = c.glGetError();
     while (err != 0) {
@@ -177,7 +177,7 @@ pub fn main() anyerror!void {
     try text.init();
 
     mainloop: while (true) {
-        // const start = c.SDL_GetPerformanceCounter();
+        const start = c.SDL_GetPerformanceCounter();
 
         var sdl_event: c.SDL_Event = undefined;
         var events = std.ArrayList(c.SDL_Event).init(std.testing.allocator);
@@ -191,14 +191,14 @@ pub fn main() anyerror!void {
         }
 
         try update(events);
-        // const now1 = c.SDL_GetPerformanceCounter();
-        // const duration1 = ((now1 - start) * 1000) / c.SDL_GetPerformanceFrequency();
-        // std.debug.print("update took {} ms\n", .{duration1});
+        const now1 = c.SDL_GetPerformanceCounter();
+        const duration1 = ((now1 - start) * 1000) / c.SDL_GetPerformanceFrequency();
+        std.debug.print("update took {} ms\n", .{duration1});
         render();
         c.SDL_GL_SwapWindow(window);
-        // const now2 = c.SDL_GetPerformanceCounter();
-        // const duration2 = ((now2 - start) * 1000) / c.SDL_GetPerformanceFrequency();
-        // std.debug.print("render took {} ms\n", .{duration2});
+        const now2 = c.SDL_GetPerformanceCounter();
+        const duration2 = ((now2 - start) * 1000) / c.SDL_GetPerformanceFrequency();
+        std.debug.print("render took {} ms\n", .{duration2});
     }
 }
 
