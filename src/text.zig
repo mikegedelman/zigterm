@@ -33,7 +33,12 @@ var texture_atlas_id: u32 = undefined;
 var tex_width: u32 = 1;
 var tex_height: u32 = 1;
 
-fn load_file(path: []const u8) anyerror![]u8 {
+pub var num_cols: usize = 0;
+pub var num_rows: usize = 0;
+
+var scale: f32 = 1.0;
+
+fn loadFile(path: []const u8) anyerror![]u8 {
     const cwd = std.fs.cwd();
     const file: std.fs.File = try cwd.openFile(path, .{ .mode = std.fs.File.OpenMode.read_only });
     try return file.readToEndAlloc(std.testing.allocator, 2048);
@@ -41,7 +46,7 @@ fn load_file(path: []const u8) anyerror![]u8 {
 
 /// Check whether the vertex/fragment shader or shader program properly compiled
 /// Panic if an error occurred.
-fn check_shader_compile(shader_obj: u32, compile_type: ShaderCompileType) void {
+fn checkShaderCompile(shader_obj: u32, compile_type: ShaderCompileType) void {
     var success: i32 = undefined;
     var info_log: [1024]u8 = undefined;
 
@@ -62,35 +67,35 @@ fn check_shader_compile(shader_obj: u32, compile_type: ShaderCompileType) void {
     }
 }
 
-fn compile_shader(v_shader_src: []u8, f_shader_src: []u8) u32 {
+fn compileShader(v_shader_src: []u8, f_shader_src: []u8) u32 {
     const vertex_id = c.glCreateShader(c.GL_VERTEX_SHADER);
     defer c.glDeleteShader(vertex_id);
     var lengths = [_]i32{@intCast(i32, v_shader_src.len)};
     c.glShaderSource(vertex_id, 1, @ptrCast([*c]const [*c]const u8, &v_shader_src), @ptrCast([*c]const c_int, &lengths));
     c.glCompileShader(vertex_id);
-    check_shader_compile(vertex_id, ShaderCompileType.Vertex);
+    checkShaderCompile(vertex_id, ShaderCompileType.Vertex);
 
     const fragment_id = c.glCreateShader(c.GL_FRAGMENT_SHADER);
     defer c.glDeleteShader(fragment_id);
     lengths = [_]i32{@intCast(i32, f_shader_src.len)};
     c.glShaderSource(fragment_id, 1, @ptrCast([*c]const [*c]const u8, &f_shader_src), @ptrCast([*c]const c_int, &lengths));
     c.glCompileShader(fragment_id);
-    check_shader_compile(fragment_id, ShaderCompileType.Fragment);
+    checkShaderCompile(fragment_id, ShaderCompileType.Fragment);
 
     const shader_id = c.glCreateProgram();
     c.glAttachShader(shader_id, vertex_id);
     c.glAttachShader(shader_id, fragment_id);
     c.glLinkProgram(shader_id);
-    check_shader_compile(shader_id, ShaderCompileType.Program);
+    checkShaderCompile(shader_id, ShaderCompileType.Program);
 
     return shader_id;
 }
 
-pub fn load_shaders_from_file(v_shader_path: []const u8, f_shader_path: []const u8) u32 {
-    var v_shader = load_file(v_shader_path) catch |err| std.debug.panic("{}\n", .{err});
-    var f_shader = load_file(f_shader_path) catch |err| std.debug.panic("{}\n", .{err});
+pub fn loadShadersFromFile(v_shader_path: []const u8, f_shader_path: []const u8) u32 {
+    var v_shader = loadFile(v_shader_path) catch |err| std.debug.panic("{}\n", .{err});
+    var f_shader = loadFile(f_shader_path) catch |err| std.debug.panic("{}\n", .{err});
 
-    return compile_shader(v_shader, f_shader);
+    return compileShader(v_shader, f_shader);
 }
 
 pub fn init() anyerror!void {
@@ -105,7 +110,7 @@ pub fn init() anyerror!void {
     var projection = zlm.Mat4.createOrthogonal(0.0, 640.0, 0.0, 400.0, -1.0, 1.0);
     // std.debug.print("{}\n", .{projection.fields[0][0]});
 
-    text_shader_id = load_shaders_from_file("shaders/text.vs", "shaders/text.fs");
+    text_shader_id = loadShadersFromFile("shaders/text.vs", "shaders/text.fs");
     c.glUseProgram(text_shader_id);
     c.glUniformMatrix4fv(c.glGetUniformLocation(text_shader_id, "projection"), 1, c.GL_FALSE, @ptrCast([*c]const f32, &projection));
 
@@ -127,7 +132,7 @@ pub fn init() anyerror!void {
     }
     defer _ = c.FT_Done_Face(face);
 
-    _ = c.FT_Set_Char_Size(face, 0, 11 << 6, 192, 192);
+    _ = c.FT_Set_Char_Size(face, 0, 8 << 6, 192, 192);
 
     // var num_glyphs: u32 = 128;
     var max_dim = (1 + (face.*.size.*.metrics.height >> 6)) * 12; // 12 = ceil(sqrt(128))
@@ -197,6 +202,11 @@ pub fn init() anyerror!void {
         ch += 1;
     }
 
+    var a_ch: Character = characters.get('a').?;
+    const num_pixels_per_char = @intToFloat(f32, a_ch.advance >> 6) * scale;
+    num_cols = @floatToInt(u32, 600 / num_pixels_per_char);
+    num_rows = 18; // 400 / 20
+
     // std.debug.print("allocating {} bytes for png_data\n", .{tex_width * tex_height * 4});
     // var png_data = try allocator.alloc(u8, tex_width * tex_height * 4);
     // defer allocator.free(png_data);
@@ -256,7 +266,7 @@ pub fn init() anyerror!void {
     }
 }
 
-pub fn render(text: []const u8, begin_x: f32, begin_y: f32, scale: f32, color: zlm.Vec3) void {
+pub fn render(text: []const u8, begin_x: f32, begin_y: f32, color: zlm.Vec3) void {
     _ = text;
     _ = begin_x;
     _ = begin_y;
@@ -329,16 +339,18 @@ pub fn render(text: []const u8, begin_x: f32, begin_y: f32, scale: f32, color: z
     var x = begin_x;
     var y = begin_y;
     var count: i32 = 0;
+    var chars_current_row: usize = 0;
     for (text) |i| {
         if (i == 0) {
             continue;
         }
         if (i == '\n' or i == '\r') {
+            chars_current_row = 0;
             x = begin_x;
             y -= 10.0;
             continue;
         }
-        if (count > 2048) {
+        if (count >= 2048) {
             std.debug.panic("opengl buffer not big enough\n", .{});
         }
 
@@ -378,8 +390,17 @@ pub fn render(text: []const u8, begin_x: f32, begin_y: f32, scale: f32, color: z
         // now advance cursors for next glyph (note that advance is number of 1/64 pixels)
         x += @intToFloat(f32, ch.advance >> 6) * scale; // bitshift by 6 to get value in pixels (2^6 = 64 (divide amount of 1/64th pixels by 64 to get amount of pixels))
         count += 1;
+        chars_current_row += 1;
+
+        if (chars_current_row >= num_cols) {
+            chars_current_row = 0;
+            x = begin_x;
+            y -= 20.0;
+        }
+        // std.debug.print("y: {} ", .{y});
         // std.debug.print("drew a char starting at {}", .{x});
     }
+    // std.debug.print("\n", .{});
     // std.debug.print("drew {} characters\n", .{count});
     // render quad
     c.glDrawArrays(c.GL_TRIANGLES, 0, count * 6);
