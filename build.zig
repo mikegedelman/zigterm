@@ -22,7 +22,8 @@ pub fn build(b: *std.build.Builder) void {
     exe.addCSourceFile("src/glad.c", &[_][]const u8{});
 
     exe.addLibPath("/usr/local/lib/");
-    exe.linkSystemLibrary("SDL2");
+    // exe.linkSystemLibrary("SDL2");
+    exe.linkSystemLibrary("GLFW");
     exe.linkSystemLibrary("freetype");
 
     exe.addCSourceFile("src/term_setup.c", &[_][]const u8{});

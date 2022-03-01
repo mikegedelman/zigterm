@@ -39,6 +39,6 @@ int tty_setup(const char* cmd) {
     }
 
     // Set the master fd to non-blocking mode.
-    fcntl(amaster, F_SETFL, (fcntl(amaster, F_GETFL) | O_NONBLOCK));
+    // fcntl(amaster, F_SETFL, (fcntl(amaster, F_GETFL) | O_NONBLOCK));
     return amaster;
 }

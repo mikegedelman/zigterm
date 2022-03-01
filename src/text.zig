@@ -132,7 +132,7 @@ pub fn init() anyerror!void {
     }
     defer _ = c.FT_Done_Face(face);
 
-    _ = c.FT_Set_Char_Size(face, 0, 8 << 6, 192, 192);
+    _ = c.FT_Set_Char_Size(face, 0, 12 << 6, 96, 96);
 
     // var num_glyphs: u32 = 128;
     var max_dim = (1 + (face.*.size.*.metrics.height >> 6)) * 12; // 12 = ceil(sqrt(128))
